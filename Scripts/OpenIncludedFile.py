@@ -22,6 +22,17 @@ class OpenIncludedHlslFileCommand(sublime_plugin.TextCommand):
 
 		if self.pos != -1:
 			scopeRegion = view.extract_scope(self.pos)
+			
+			# Added by Matt Ostgard
+			unityShaderPath = self.get_unity_hlsl_reference(view.file_name(), view.substr(scopeRegion))
+
+			if (unityShaderPath):
+				fileView = sublime.active_window().find_open_file(unityShaderPath)
+				if fileView == None:
+					fileView = sublime.active_window().open_file(unityShaderPath)
+				sublime.active_window().focus_view(fileView)
+				return
+
 			originalFilePath = view.substr(scopeRegion).replace("/", "\\")
 
 			# Search order is from absolute path of launching file, then list order of user paths
@@ -75,3 +86,81 @@ class OpenIncludedHlslFileCommand(sublime_plugin.TextCommand):
 							return True
 		self.pos = -1
 		return False
+
+
+	def get_unity_hlsl_reference(self, currentFile, targetPath):
+		"""
+		Relative Path Priorirty:
+		- Current file's folder
+		- Project's Asset folder
+		- Packages folder (where manifest.json lives)
+		- Library/PackageCache folder (where the packages in manifest.json are referenced)
+		"""
+
+		if not os.path.exists(currentFile):
+			return None
+
+		currentFolder = os.path.normpath(currentFile + "/../")
+
+		# Check relative to currentFile
+		currentWalkPath = currentFolder
+		cachedWalkPath = ""
+		walkPaths = []
+		while currentWalkPath != cachedWalkPath:
+			cachedWalkPath = currentWalkPath
+			currentWalkPath = os.path.normpath(currentWalkPath + "/..")
+			walkPaths.append(currentWalkPath)
+			relativeToCurrentFile = os.path.normpath(os.path.join(currentWalkPath, targetPath))
+			if (os.path.exists(relativeToCurrentFile)):
+				return relativeToCurrentFile
+				
+		# Find the project's asset & packages folders
+		assetsPath = None
+		packagesPath = None
+		packageCachePath = None
+		for walkPath in walkPaths:
+			a = os.path.normpath(walkPath + "/Assets")
+			p = os.path.normpath(walkPath + "/Packages")
+			c = os.path.normpath(walkPath + "/Library/PackageCache")
+
+			# If both Assets and Packages folders exist then assume it is the project's root, but don't rely on
+			# Library/PackageCache folder existing in case it hasn't been generated yet.
+			if os.path.isdir(a) and os.path.isdir(p):
+				assetsPath = a
+				packagesPath = p
+				packageCachePath = c if os.path.isdir(c) else packageCachePath
+
+
+		if not assetsPath:
+			return None
+
+		targetPathInAssets = os.path.normpath(os.path.join(assetsPath, targetPath))
+
+		if os.path.isfile(targetPathInAssets):
+			return targetPathInAssets
+
+		backSlashSplits = targetPath.split("\\")
+		targetPathParts = []
+		for p in backSlashSplits:
+			targetPathParts.extend(p.split("/"))
+
+		if len(targetPathParts) >= 3 and targetPathParts[0].lower() == "packages":
+			packageName = targetPathParts[1]
+			targetRelative = "/".join(targetPathParts[2:])
+
+			dirs = os.listdir(packagesPath)
+			for d in dirs:
+				if d == packageName:
+					p = os.path.normpath(os.path.join(packagesPath, d, targetRelative))
+					if os.path.isfile(p):
+						return p
+
+			dirs = os.listdir(packageCachePath)
+			for d in dirs:
+				if d.split("@")[0] == packageName:
+					p = os.path.normpath(os.path.join(packageCachePath, d, targetRelative))
+					if os.path.isfile(p):
+						return p
+
+		return None
+					
